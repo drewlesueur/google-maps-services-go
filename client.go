@@ -32,14 +32,15 @@ import (
 
 // Client may be used to make requests to the Google Maps WebService APIs
 type Client struct {
-	httpClient        *http.Client
-	apiKey            string
-	baseURL           string
-	clientID          string
-	signature         []byte
-	requestsPerSecond int
-	rateLimiter       chan int
-	channel           string
+	httpClient           *http.Client
+	apiKey               string
+	baseURL              string
+	clientID             string
+	signature            []byte
+	requestsPerSecond    int
+	simultaneousRequests int
+	rateLimiter          chan int
+	channel              string
 }
 
 // ClientOption is the type of constructor options for NewClient(...).
@@ -62,16 +63,24 @@ func NewClient(options ...ClientOption) (*Client, error) {
 	}
 
 	if c.requestsPerSecond > 0 {
-		// Implement a bursty rate limiter.
-		// Allow up to 1 second worth of requests to be made at once.
-		c.rateLimiter = make(chan int, c.requestsPerSecond)
-		// Prefill rateLimiter with 1 seconds worth of requests.
-		for i := 0; i < c.requestsPerSecond; i++ {
+		// Implement a rate limiter.
+		// Allow up to simultaneousRequests requests to start at the same time.
+		// By default, if simultaneousRequests is not set,
+		// let requestsPerSecond requests to start at the same time.
+		var chanLength int
+		if c.simultaneousRequests == 0 {
+			chanLength = c.requestsPerSecond
+		} else {
+			chanLength = c.simultaneousRequests - 1
+		}
+		c.rateLimiter = make(chan int, chanLength)
+		// Prefill rateLimiter with chanLength worth of requests.
+		for i := 0; i < chanLength; i++ {
 			c.rateLimiter <- 1
 		}
 		go func() {
-			// Wait a second for pre-filled quota to drain
-			time.Sleep(time.Second)
+			// Wait for pre-filled quota to drain
+			time.Sleep(time.Second / time.Duration(c.requestsPerSecond) * time.Duration(chanLength))
 			// Then, refill rateLimiter continuously
 			for _ = range time.Tick(time.Second / time.Duration(c.requestsPerSecond)) {
 				c.rateLimiter <- 1
@@ -133,6 +142,15 @@ func WithClientIDAndSignature(clientID, signature string) ClientOption {
 func WithRateLimit(requestsPerSecond int) ClientOption {
 	return func(c *Client) error {
 		c.requestsPerSecond = requestsPerSecond
+		return nil
+	}
+}
+
+// WithSimultaneousRequests configures the number of requests that can be made
+// at any one time
+func WithSimultaneousRequests(simultaneousRequests int) ClientOption {
+	return func(c *Client) error {
+		c.simultaneousRequests = simultaneousRequests
 		return nil
 	}
 }
